@@ -11,6 +11,7 @@ import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.networktables.StructArrayPublisher;
 import edu.wpi.first.math.geometry.Translation2d;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+import frc.robot.Robot;
 import frc.robot.simulation.ProjectileVisualizer;
 
 import java.util.function.Supplier;
@@ -35,6 +36,12 @@ public class Shooter_Solver extends SubsystemBase {
     private int shooter_number;
     private boolean shooting_permisive = false;
     private double shooting_watchdog = 0.0;
+    private static final int num_balls_vis = 30;
+    private Translation3d[] trajectoryvis = new Translation3d[num_balls_vis];
+    private Translation3d[] trajectoryvis_prime = new Translation3d[num_balls_vis];
+    private int ball_index = 0;
+    private double last_shot_time = 0.0;
+
 
     private static class Trajectory {
         public final double angle;
@@ -90,6 +97,11 @@ public class Shooter_Solver extends SubsystemBase {
         this.shooterMuzzleV0Supplier = shooterMuzzleV0Supplier;
         this.lastTimeSolved = Timer.getFPGATimestamp();
         this.shooter_number = number;
+
+        for(int i =0; i < num_balls_vis; i++){
+            trajectoryvis[i] = new Translation3d(0,0,0);
+            trajectoryvis_prime[i] = new Translation3d(0,0,0);
+        }
         trajectoryPublisher = 
         NetworkTableInstance.getDefault()
             .getStructArrayTopic("trajectoryvis" + number, Translation3d.struct)
@@ -219,66 +231,27 @@ public class Shooter_Solver extends SubsystemBase {
             shooterVelWorld.getZ() + vpwZ
         );
         if(RobotBase.isSimulation()){
-            Translation3d[] trajectoryvis = new Translation3d[100];
-            if(this.shooting_permisive == true){
+           
+            if(this.shooting_permisive == true && (Timer.getFPGATimestamp() - last_shot_time) > 0.05){
                 // System.out.print("here");
-                double x = shooterPoseWorld.getX() ;
-                double y = shooterPoseWorld.getY() ;
-                double z = shooterPoseWorld.getZ() ;
-                double vz = shooterVelocityCheck.getZ();
-                int balls = 95;
-                int offset =0;
-                if(this.shooter_number ==2){
-                    offset =2;
-                    
-                }
-                for(int i = 0; i < balls; i++){
-                    double t = (i+offset) * (trajectory.time+.5) /(balls-1);
-                    double dt = (trajectory.time+.5) / balls;
-                    x = x + (shooterVelocityCheck.getX()) * dt;
-                    y = y + (shooterVelocityCheck.getY()) * dt;
-                    z = z + vz * dt;
-                    vz = vz - 9.81 * dt;
-                    
-                    trajectoryvis[i] = new Translation3d(x, y, z);
-                }
-                for(int i = balls; i < 100; i++){
-                    trajectoryvis[i] = new Translation3d(0,0,0);
-                }
-            
-                // System.out.print(trajectory.time + " " + trajectoryvis[99].getX() + ", " + trajectoryvis[99].getY() + ", " + trajectoryvis[99].getZ() + "\n");
                 
-                // Publish as struct arra
-                Translation3d[] lineComparison = new Translation3d[2];
-                lineComparison[0] = new Translation3d(shooterPoseWorld.getX(), shooterPoseWorld.getY(), shooterPoseWorld.getZ());
-                lineComparison[1] = lineComparison[0].plus(new Translation3d(shooter_xy_vector_required.getX(),shooter_xy_vector_required.getY(),1).times(5));
-                linePublisher.set(lineComparison);
-                
-                Translation3d[] vecComparison = new Translation3d[2];
-                vecComparison[0] = new Translation3d(shooterPoseWorld.getX(), shooterPoseWorld.getY(), 0);
-                vecComparison[1] = vecComparison[0].plus(new Translation3d(vector_xy_required.getX(),vector_xy_required.getY(),0).times(5));
-                vecPublisher.set(vecComparison);
+                // shoot ball in sim 
+                trajectoryvis[ball_index] = new Translation3d(shooterPoseWorld.getX(), shooterPoseWorld.getY(), shooterPoseWorld.getZ());
+                trajectoryvis_prime[ball_index] = new Translation3d(
+                    shooterVelocityCheck.getX(),
+                    shooterVelocityCheck.getY(),
+                    shooterVelocityCheck.getZ()
+                );
+                ball_index = (ball_index + 1) % num_balls_vis;
+
+                last_shot_time = Timer.getFPGATimestamp();
             }else{
-                for(int i = 0; i < 100; i++){
-                    trajectoryvis[i] = new Translation3d(0,0,0);
-                }
+                
             }
-            trajectoryPublisher.set(trajectoryvis);
+            
         }
         if (!trajectory.isValid || Math.abs(trajectory.Yerror) >.2) {
-            if(RobotBase.isSimulation()){
-                Translation3d[] trajectoryvis = new Translation3d[100];
-                double x = 0 ;
-                double y = 0 ;
-                double z = 0 ;
-                
-                for(int i = 0; i < 100; i++){
-                    trajectoryvis[i] = new Translation3d(x, y, z);
-                }
-
-                // Publish as struct arra
-                trajectoryPublisher.set(trajectoryvis);
-            }
+            
             _best_solution = new Solution("No Solution", requiredRobotYawRad, trajectory.angle, trajectory.time, muzzleVelocityCheck,shooterVelocityCheck, trajectory.Yerror);
             return 1e8; // Penalize solutions that are physically impossible
         }
@@ -347,6 +320,16 @@ public class Shooter_Solver extends SubsystemBase {
         // SmartDashboard.putNumber(this.shooter_number+"SS Solve Time (ms)", (timeAfterSolving - timeBeforeSolving)*1000.0);
         if(currentTime - shooting_watchdog > 100){
             this.shooting_permisive = false;
+        }
+        
+        if(RobotBase.isSimulation()){
+            
+            // Publish as struct array
+            for(int i =0; i < num_balls_vis; i++){
+                trajectoryvis_prime[i] = new Translation3d(trajectoryvis_prime[i].getX(), trajectoryvis_prime[i].getY(), trajectoryvis_prime[i].getZ()-9.81*(currentTime-lastTimeSolved));
+                trajectoryvis[i] = trajectoryvis[i].plus(trajectoryvis_prime[i].times(currentTime-lastTimeSolved));
+            }
+            trajectoryPublisher.set(trajectoryvis);
         }
         lastTimeSolved = currentTime;
     }
